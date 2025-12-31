@@ -203,13 +203,21 @@ else:
             try:
                 with st.spinner("분석 중..."):
                     
-                    #result = analyze_meal_mock()
                     result = analyze_meal(
                         image_bytes=img_bytes,
                         mime=mime,
                         profile=profile,
                         prev_summary=st.session_state.prev_summary
                     )
+                entry = {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "foods": result.get("foods", []),
+                    "macros": result.get("macros", {}),
+                    "diagnosis": result.get("diagnosis", ""),
+                    "next_meal_tip": result.get("next_meal_tip", ""),
+                    "note": "auto_log_no_image"
+                }
+                append_log(entry)
 
                 st.subheader("✅ 분석 결과(추정)")
                 #st.json(result)
@@ -235,19 +243,6 @@ else:
                 st.error("모델 출력이 JSON 형식이 아니었어. 다시 눌러봐(가끔 발생).")
             except Exception as e:
                 st.error(f"분석 실패: {e}")
-
-    # 8-2) 파일 저장 + 로그
-    if save_btn:
-        entry = {
-            "timestamp": now.isoformat(timespec="seconds"),
-            "foods": result.get("foods", []),
-            "macros": result.get("macros", {}),
-            "diagnosis": result.get("diagnosis", ""),
-            "next_meal_tip": result.get("next_meal_tip", ""),
-        }
-        append_log(entry)
-
-        st.success(f"저장 완료: {save_path}")
 
 st.divider()
 
