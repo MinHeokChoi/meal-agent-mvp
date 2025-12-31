@@ -67,18 +67,6 @@ def to_data_url(file_bytes: bytes, mime: str) -> str:
 # -----------------------------
 # 5) AI 분석 함수 (사진 + 프로필 + 이전요약)
 # -----------------------------
-#def analyze_meal_mock():
-    return {
-        "foods": ["제육볶음", "흰쌀밥", "김치"],
-        "macros": {
-            "carbs_g": "70~90",
-            "protein_g": "25~35",
-            "fat_g": "25~35",
-            "calories_kcal": "700~900"
-        },
-        "diagnosis": "지방 비중이 다소 높아 감량 목표에는 주의가 필요함.",
-        "next_meal_tip": "다음 끼니는 닭가슴살이나 생선처럼 지방 적은 단백질을 추천."
-    }
 
 def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str | None) -> dict:
     """
@@ -205,7 +193,7 @@ else:
     with col1:
         run = st.button("“사진 분석 (3초 정도 걸려요)”")
     with col2:
-        save_btn = st.button("사진 저장 + 로그 기록")
+        save_btn = st.button("로그 기록")
 
     # 8-1) AI 분석
     if run:
@@ -250,22 +238,16 @@ else:
 
     # 8-2) 파일 저장 + 로그
     if save_btn:
-        MEALS_DIR.mkdir(exist_ok=True)
-
-        now = datetime.now()
-        ts = now.strftime("%Y%m%d_%H%M%S")
-        ext = (uploaded.name.split(".")[-1] if "." in uploaded.name else "jpg").lower()
-        save_path = MEALS_DIR / f"meal_{ts}.{ext}"
-        save_path.write_bytes(img_bytes)
-
         entry = {
-            "timestamp": now.isoformat(timespec="seconds"),
-            "image_path": str(save_path),
-            #"note": "사진 저장(분석은 별도 버튼)"
+    "timestamp": datetime.now().isoformat(timespec="seconds"),
+    "foods": result.get("foods", []),
+    "macros": result.get("macros", {}),
+    "diagnosis": result.get("diagnosis", ""),
+    "next_meal_tip": result.get("next_meal_tip", ""),
+    "note": "auto_log_no_image"
         }
         append_log(entry)
-
-        st.success(f"저장 완료: {save_path}")
+        st.caption("📝 분석 결과는 자동으로 기록돼요 (사진은 저장되지 않아요).")
 
 st.divider()
 
