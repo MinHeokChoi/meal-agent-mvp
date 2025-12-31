@@ -227,7 +227,7 @@ else:
                 #st.json(result)
                 st.markdown(f"""
                     ### 🍽️ 오늘 식사 요약
-                    - 음식: {", ".join(result["foods"][:3])}
+                    - 음식: {", ".join(result[  "foods"][:3])}
                     - 탄수화물: {result["macros"]["carbs_g"]}g
                     - 단백질: {result["macros"]["protein_g"]}g
                     - 지방: {result["macros"]["fat_g"]}g
