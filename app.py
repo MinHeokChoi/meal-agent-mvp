@@ -239,15 +239,15 @@ else:
     # 8-2) 파일 저장 + 로그
     if save_btn:
         entry = {
-    "timestamp": datetime.now().isoformat(timespec="seconds"),
-    "foods": result.get("foods", []),
-    "macros": result.get("macros", {}),
-    "diagnosis": result.get("diagnosis", ""),
-    "next_meal_tip": result.get("next_meal_tip", ""),
-    "note": "auto_log_no_image"
+            "timestamp": now.isoformat(timespec="seconds"),
+            "foods": result.get("foods", []),
+            "macros": result.get("macros", {}),
+            "diagnosis": result.get("diagnosis", ""),
+            "next_meal_tip": result.get("next_meal_tip", ""),
         }
         append_log(entry)
-        st.caption("📝 분석 결과는 자동으로 기록돼요 (사진은 저장되지 않아요).")
+
+        st.success(f"저장 완료: {save_path}")
 
 st.divider()
 
@@ -255,9 +255,17 @@ st.divider()
 # 9) 최근 로그 보기
 # -----------------------------
 st.header("3) 최근 기록 보기")
+
+st.header("최근 식사 기록 (최대 5개)")
 log = load_log()
 if not log:
     st.write("아직 저장된 기록이 없어.")
 else:
     for item in log[-5:][::-1]:
-        st.write(f"- {item['timestamp']} / {item['image_path']} / {item.get('note','')}")
+        foods = ", ".join(item.get("foods", [])[:3])
+        st.markdown(f"""
+- 🕒 {item.get("timestamp")}
+- 🍽️ {foods}
+- 🧠 {item.get("diagnosis","")}
+- ✅ 팁: {item.get("next_meal_tip","")}
+""")
