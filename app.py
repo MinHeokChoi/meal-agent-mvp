@@ -152,7 +152,7 @@ st.header("1) 내 건강 정보 저장")
 profile = load_profile()
 
 with st.form("profile_form"):
-    st.subheader("프로필 입력 (최소)")
+    st.subheader("프로필 입력")
     height = st.number_input("키 (cm)", min_value=100, max_value=220, value=int(profile.get("height", 175)))
     weight = st.number_input("몸무게 (kg)", min_value=30, max_value=200, value=int(profile.get("weight", 70)))
     gender = st.selectbox("성별", ["male", "female", "other"],
@@ -169,9 +169,9 @@ if submitted:
     st.success("저장 완료! user_profile.json에 기록했어.")
     profile = new_profile
 
-st.caption("현재 저장된 프로필")
-st.json(profile if profile else {"info": "아직 저장된 프로필이 없어."})
-st.divider()
+#st.caption("현재 저장된 프로필")
+#st.json(profile if profile else {"info": "아직 저장된 프로필이 없어."})
+#st.divider()
 
 # -----------------------------
 # 8) 사진 업로드 + AI 분석
@@ -192,9 +192,6 @@ else:
     col1, col2 = st.columns(2)
     with col1:
         run = st.button("“사진 분석 (3초 정도 걸려요)”")
-    with col2:
-        save_btn = st.button("로그 기록")
-
     # 8-1) AI 분석
     if run:
         if not profile:
