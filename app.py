@@ -5,11 +5,13 @@ from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
+#from dotenv import load_dotenv
 from openai import OpenAI
 
 # -----------------------------
 # 0) 환경변수 로드 + OpenAI 클라이언트
 # -----------------------------
+#load_dotenv()  # .env 파일 읽기
 client = OpenAI()  # OPENAI_API_KEY를 자동으로 읽음 :contentReference[oaicite:3]{index=3}
 
 # -----------------------------
