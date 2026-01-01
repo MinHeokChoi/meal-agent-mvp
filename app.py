@@ -4,14 +4,36 @@ import base64
 from pathlib import Path
 from datetime import datetime
 
+import re
+
 import streamlit as st
 #from dotenv import load_dotenv
 from openai import OpenAI
 
-# -----------------------------
-# 0) 환경변수 로드 + OpenAI 클라이언트
-# -----------------------------
-#load_dotenv()  # .env 파일 읽기
+def safe_json_parse(text: str) -> dict | None:
+    """
+    모델 출력에서 JSON 객체만 안전하게 추출해서 파싱.
+    실패하면 None 반환.
+    """
+    if not text:
+        return None
+
+    # 1) 전체가 JSON인 경우
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # 2) 중간에 섞인 경우 → 첫 { ... } 블록 추출
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        return json.loads(match.group())
+    except Exception:
+        return None
+
 client = OpenAI()  # OPENAI_API_KEY를 자동으로 읽음 :contentReference[oaicite:3]{index=3}
 
 # -----------------------------
@@ -82,9 +104,11 @@ def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str
 
     # “정확도”보다 “쓸만함”이 목적이라 범위/추정으로 요구
     system = (
-        "너는 식사 사진 기반 영양 추정 코치다. "
-        "정확한 계량은 불가능하므로 반드시 '추정'임을 명시하고 범위로 답하라. "
-        "과도한 확신 표현(정확히/확실히)을 피하라."
+         "너는 식사 사진 기반 영양 추정 코치다. "
+        "반드시 JSON 객체만 출력해야 한다. "
+        "설명, 문장, 코드블록(```)을 절대 포함하지 마라. "
+        "값은 모두 문자열로 작성하라. "
+        "정확한 계량은 불가능하므로 '추정'임을 전제로 범위로 답하라."
     )
 
     user_text = f"""
@@ -98,42 +122,61 @@ def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str
 {prev_summary or "없음"}
 
 요청:
-1) 사진 속 음식 후보 2~6개(가능하면 구체적으로)
-2) 전체 한 끼 기준 탄수화물/단백질/지방/칼로리 '범위' (예: 단백질 25~40g)
-3) 목표 대비 한 줄 진단
-4) 다음 끼니를 더 좋게 만드는 1가지 팁
-응답은 반드시 JSON으로만 출력:
+아래 스키마를 정확히 따르는 JSON만 출력하라.
 {{
-  "foods": ["..."],
+  "foods": ["string"],
   "macros": {{
     "carbs_g": "min~max",
     "protein_g": "min~max",
     "fat_g": "min~max",
     "calories_kcal": "min~max"
   }},
-  "diagnosis": "...",
-  "next_meal_tip": "..."
+  "diagnosis": "string",
+  "next_meal_tip": "string"
 }}
 """
 
     # OpenAI 문서의 이미지 입력 형식: input_text + input_image :contentReference[oaicite:4]{index=4}
-    resp = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{
-            "role": "system",
-            "content": [{"type": "input_text", "text": system}],
-        },{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": user_text},
-                {"type": "input_image", "image_url": data_url},
-            ],
-        }],
-    )
+    for attempt in range(2):  # 최대 2번 시도
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[{
+                "role": "system",
+                "content": [{"type": "input_text", "text": system}],
+            },{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user_text},
+                    {"type": "input_image", "image_url": data_url},
+                ],
+            }],
+        )
 
-    # 모델이 JSON만 출력하도록 요구했지만, 안전하게 파싱
-    text = resp.output_text.strip()
-    return json.loads(text)
+        raw_text = resp.output_text.strip()
+        parsed = safe_json_parse(raw_text)
+
+        if parsed:
+            return parsed
+
+        # 재시도 시 프롬프트 더 강하게
+        user_text = (
+            "이전 출력이 JSON 형식이 아니었다. "
+            "설명 없이 JSON 객체만 다시 출력하라.\n\n" + user_text
+        )
+
+    # 2번 실패 → fallback
+    return {
+        "foods": [],
+        "macros": {
+            "carbs_g": "추정 불가",
+            "protein_g": "추정 불가",
+            "fat_g": "추정 불가",
+            "calories_kcal": "추정 불가"
+        },
+        "diagnosis": "사진 인식이 불명확해 영양 추정이 어려움.",
+        "next_meal_tip": "조금 더 가까이서 다시 찍어보세요."
+
+    }
 
 # -----------------------------
 # 6) Streamlit 페이지
@@ -218,17 +261,20 @@ else:
 
                 st.subheader("✅ 분석 결과(추정)")
                 #st.json(result)
+                macros = result.get("macros", {})
+
                 st.markdown(f"""
                     ### 🍽️ 오늘 식사 요약
-                    - 음식: {", ".join(result[  "foods"][:3])}
-                    - 탄수화물: {result["macros"]["carbs_g"]}g
-                    - 단백질: {result["macros"]["protein_g"]}g
-                    - 지방: {result["macros"]["fat_g"]}g
-                    - 칼로리: {result["macros"]["calories_kcal"]}g
+                    - 음식: {", ".join(result.get("foods", [])[:3]) or "알 수 없음"}
+                    - 탄수화물: {macros.get("carbs_g", "-")} g
+                    - 단백질: {macros.get("protein_g", "-")} g
+                    - 지방: {macros.get("fat_g", "-")} g
+                    - 칼로리: {macros.get("calories_kcal", "-")} kcal
 
-                    👉 **진단:** {result["diagnosis"]}  
-                    👉 **다음 끼니 팁:** {result["next_meal_tip"]}
+                    👉 **진단:** {result.get("diagnosis", "")}  
+                    👉 **다음 끼니 팁:** {result.get("next_meal_tip", "")}
                     """)
+
 
                 # 다음 분석에 쓸 “이전 요약 1줄” 만들기
                 # (AI 에이전트 느낌 최소 장치)
