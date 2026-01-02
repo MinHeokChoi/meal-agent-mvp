@@ -555,10 +555,10 @@ else:
                     👉 **다음 끼니 팁:** {result.get("next_meal_tip", "")}
                     """)
                     
-                """st.header("📊 오늘 누적(추정)")
+                st.header("📊 오늘 누적(추정)")
                 today = datetime.now().date().isoformat()
                 tot = daily_totals(today)
-                targets = get_daily_targets(profile) if profile else {}"""
+                targets = get_daily_targets(profile) if profile else {}
 
                 tm = tot["total_macros"]
                 st.markdown(f"""
