@@ -22,7 +22,7 @@ def safe_json_parse(text: str) -> dict | None:
     try:
         return json.loads(text)
     except Exception:
-        pass
+        pass        
 
     # 2) 중간에 섞인 경우 → 첫 { ... } 블록 추출
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -78,6 +78,33 @@ def append_log(entry: dict) -> None:
         json.dumps(log, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
+
+def make_prev_summary_from_log(n: int = 3) -> str | None:
+    """
+    최근 n개 식사 기록을 한 줄 요약으로 만들어 반환.
+    기록이 없으면 None.
+    """
+    log = load_log()
+    if not log:
+        return None
+
+    recent = log[-n:]  # 오래된→최신 순
+    lines = []
+    for item in recent:
+        foods = ", ".join(item.get("foods", [])[:3]) or "음식 불명"
+        diag = (item.get("diagnosis") or "").strip()
+        tip = (item.get("next_meal_tip") or "").strip()
+
+        # 너무 길면 잘라서 프롬프트 비용/노이즈 줄이기
+        if len(diag) > 80:
+            diag = diag[:80] + "..."
+        if len(tip) > 60:
+            tip = tip[:60] + "..."
+
+        line = f"- {foods} | 진단: {diag or '없음'} | 팁: {tip or '없음'}"
+        lines.append(line)
+
+    return "\n".join(lines)
 
 # -----------------------------
 # 4) 이미지 -> base64 data URL 변환
@@ -184,9 +211,9 @@ def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str
 st.set_page_config(page_title="Meal Agent MVP", layout="centered")
 st.title("🍽️ Meal Agent MVP")
 
-# 세션 상태(이전 식사 요약) 초기화
+# 세션 상태(이전 식사 요약)
 if "prev_summary" not in st.session_state:
-    st.session_state.prev_summary = None
+    st.session_state.prev_summary = make_prev_summary_from_log(n=3)
 
 # -----------------------------
 # 7) 프로필 섹션
@@ -242,12 +269,12 @@ else:
         else:
             try:
                 with st.spinner("분석 중..."):
-                    
+                    prev_summary = make_prev_summary_from_log(n=3)
                     result = analyze_meal(
                         image_bytes=img_bytes,
                         mime=mime,
                         profile=profile,
-                        prev_summary=st.session_state.prev_summary
+                        prev_summary= prev_summary
                     )
                 entry = {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -279,8 +306,9 @@ else:
                 # 다음 분석에 쓸 “이전 요약 1줄” 만들기
                 # (AI 에이전트 느낌 최소 장치)
                 foods = ", ".join(result.get("foods", [])[:3])
-                st.session_state.prev_summary = f"{foods} / 진단: {result.get('diagnosis','')}"
-                st.caption(f"다음 분석에 참고할 이전 요약(세션): {st.session_state.prev_summary}")
+                st.session_state.prev_summary = make_prev_summary_from_log(n=3)
+                st.caption(f"다음 분석에 참고할 최근 3끼 요약:\n{st.session_state.prev_summary or '없음'}")
+
 
             except json.JSONDecodeError:
                 st.error("모델 출력이 JSON 형식이 아니었어. 다시 눌러봐(가끔 발생).")
