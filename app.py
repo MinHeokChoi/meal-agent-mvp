@@ -34,6 +34,94 @@ def safe_json_parse(text: str) -> dict | None:
     except Exception:
         return None
 
+def parse_range_min_max(range_str: str) -> tuple[float | None, float | None]:
+    """
+    "min~max"에서 min,max 숫자 추출. 없으면 (None, None)
+    """
+    if not range_str or "불가" in range_str:
+        return (None, None)
+    nums = re.findall(r"[\d.]+", str(range_str))
+    if not nums:
+        return (None, None)
+    try:
+        if len(nums) == 1:
+            v = float(nums[0])
+            return (v, v)
+        return (float(nums[0]), float(nums[-1]))
+    except Exception:
+        return (None, None)
+
+def add_ranges(a: str, b: str) -> str:
+    """
+    범위 문자열 두 개를 더해 "min~max"로 반환.
+    하나라도 추정 불가면 '추정 불가'
+    """
+    amin, amax = parse_range_min_max(a)
+    bmin, bmax = parse_range_min_max(b)
+    if amin is None or amax is None or bmin is None or bmax is None:
+        return "추정 불가"
+    return f"{int(round(amin + bmin))}~{int(round(amax + bmax))}"
+
+def daily_totals(date_iso: str) -> dict:
+    """
+    특정 날짜(YYYY-MM-DD)의 누적 macros 범위를 합산해 반환
+    """
+    log = load_log()
+    items = [x for x in log if x.get("date") == date_iso]
+
+    total = {
+        "carbs_g": "0~0",
+        "protein_g": "0~0",
+        "fat_g": "0~0",
+        "calories_kcal": "0~0",
+    }
+
+    for it in items:
+        macros = it.get("macros", {}) or {}
+        total["carbs_g"] = add_ranges(total["carbs_g"], str(macros.get("carbs_g", "추정 불가")))
+        total["protein_g"] = add_ranges(total["protein_g"], str(macros.get("protein_g", "추정 불가")))
+        total["fat_g"] = add_ranges(total["fat_g"], str(macros.get("fat_g", "추정 불가")))
+        total["calories_kcal"] = add_ranges(total["calories_kcal"], str(macros.get("calories_kcal", "추정 불가")))
+
+    return {"count": len(items), "total_macros": total, "items": items}
+
+def get_daily_targets(profile: dict) -> dict:
+    weight = profile.get("weight")
+    goal = (profile.get("goal") or "maintain").lower()
+    if not isinstance(weight, (int, float)) or weight <= 0:
+        weight = 70
+
+    if goal == "bulk":
+        protein = weight * 1.8
+        cal = 2700
+    elif goal == "cut":
+        protein = weight * 1.6
+        cal = 2000
+    else:
+        protein = weight * 1.6
+        cal = 2300
+
+    return {
+        "protein_g": f"{int(round(protein*0.9))}~{int(round(protein*1.1))}",
+        "calories_kcal": f"{int(round(cal*0.9))}~{int(round(cal*1.1))}",
+    }
+
+def render_today_dashboard(profile: dict):
+    st.header("📊 오늘 누적(추정)")
+    today = datetime.now().date().isoformat()
+    tot = daily_totals(today)
+    tm = tot["total_macros"]
+
+    targets = get_daily_targets(profile) if profile else {}
+
+    st.markdown(f"""
+- 오늘 기록된 끼니 수: **{tot["count"]}**
+- 누적 탄수화물: **{tm["carbs_g"]} g**
+- 누적 단백질: **{tm["protein_g"]} g** / 목표(대략): **{targets.get("protein_g","-")} g**
+- 누적 지방: **{tm["fat_g"]} g**
+- 누적 칼로리: **{tm["calories_kcal"]} kcal** / 목표(대략): **{targets.get("calories_kcal","-")} kcal**
+""")
+
 client = OpenAI()  # OPENAI_API_KEY를 자동으로 읽음 :contentReference[oaicite:3]{index=3}
 
 # -----------------------------
@@ -79,6 +167,17 @@ def append_log(entry: dict) -> None:
         encoding="utf-8"
     )
 
+def get_default_meal_type() -> str:
+    """
+    최근 로그의 meal_type을 기본값으로 반환.
+    없으면 '점심'
+    """
+    log = load_log()
+    if not log:
+        return "점심"
+    last = log[-1].get("meal_type")
+    return last if last in ["아침", "점심", "저녁", "간식"] else "점심"
+
 def make_prev_summary_from_log(n: int = 3) -> str | None:
     """
     최근 n개 식사 기록을 한 줄 요약으로 만들어 반환.
@@ -106,6 +205,120 @@ def make_prev_summary_from_log(n: int = 3) -> str | None:
 
     return "\n".join(lines)
 
+def parse_range_max(range_str: str) -> float | None:
+    """
+    "min~max" 형태에서 max 숫자만 추출.
+    숫자가 없거나 '추정 불가'면 None.
+    """
+    if not range_str or "불가" in range_str:
+        return None
+    # 숫자 추출
+    nums = re.findall(r"[\d.]+", range_str)
+    if not nums:
+        return None
+    # 보통 "min~max"니까 마지막 숫자를 max로 간주
+    try:
+        return float(nums[-1])
+    except Exception:
+        return None
+def get_rule_thresholds(profile: dict) -> dict:
+    """
+    MVP용 임계값 계산.
+    복잡한 TDEE 대신, 체중 기반으로 끼니 단백질 최소치를 잡고
+    목표에 따라 칼로리 상단 경고선을 조정.
+    """
+    weight = profile.get("weight")
+    goal = (profile.get("goal") or "").lower()
+
+    # 기본값 (프로필 없을 때 대비)
+    if not isinstance(weight, (int, float)) or weight <= 0:
+        weight = 70
+
+    # 1) 끼니 단백질 최소치(상단 기준으로 체크)
+    # 감량/유지: 체중(kg)*0.35g, 증량: *0.40g 정도를 "한 끼 상단이 이보다 낮으면 부족 가능"으로 둠
+    if goal == "bulk":
+        protein_min_max_threshold = max(25, int(round(weight * 0.40)))
+    else:
+        protein_min_max_threshold = max(25, int(round(weight * 0.35)))
+
+    # 2) 칼로리 상단 경고선 (한 끼가 너무 큰지)
+    # 감량: 낮게, 유지: 중간, 증량: 높게
+    # (정교한 TDEE가 아니라 '경고선'이라 보수적으로)
+    if goal == "cut":
+        calorie_high_max_threshold = 750
+    elif goal == "bulk":
+        calorie_high_max_threshold = 950
+    else:  # maintain
+        calorie_high_max_threshold = 850
+
+    # 3) 지방 상단 경고선 (한 끼)
+    # 체중이 클수록 조금 허용 폭을 늘림
+    fat_high_max_threshold = 35 if weight < 80 else 40
+
+    return {
+        "protein_min_max_threshold": protein_min_max_threshold,
+        "calorie_high_max_threshold": calorie_high_max_threshold,
+        "fat_high_max_threshold": fat_high_max_threshold,
+    }
+
+def apply_rules(result: dict, profile: dict) -> dict:
+    """
+    LLM 결과(result)에 룰 기반 경고/보완을 얹어 반환.
+    - result["rule_flags"]: [..]
+    - result["rule_note"]: "..."
+    - result["diagnosis"]: 기존 진단 뒤에 필요한 경우 덧붙임
+    """
+    flags = []
+    notes = []
+
+    thresholds = get_rule_thresholds(profile)
+    protein_thr = thresholds["protein_min_max_threshold"]
+    cal_thr = thresholds["calorie_high_max_threshold"]
+    fat_thr = thresholds["fat_high_max_threshold"]
+
+    goal = (profile.get("goal") or "").lower()
+    foods = " ".join(result.get("foods", [])).lower()
+    macros = result.get("macros", {}) or {}
+
+    cal_max = parse_range_max(str(macros.get("calories_kcal", "")))
+    protein_max = parse_range_max(str(macros.get("protein_g", "")))
+    fat_max = parse_range_max(str(macros.get("fat_g", "")))
+
+    # 룰 1) 목표별 칼로리 상단 경고
+    if cal_max is not None and cal_max >= cal_thr:
+        flags.append("high_calorie_meal")
+        notes.append(f"이번 끼니 칼로리 상단({int(cal_max)}kcal)이 높을 수 있어. (경고선 {cal_thr}kcal) 다음 끼니는 탄수/지방 중 하나를 줄여 균형을 맞춰보자.")
+
+    # 룰 2) 단백질 부족 가능(상단이 기준 미만이면)
+    if protein_max is not None and protein_max < protein_thr:
+        flags.append("protein_low")
+        notes.append(f"단백질이 부족할 가능성이 있어. (권장 상단 기준 {protein_thr}g) 다음 끼니는 단백질(살코기/계란/두부/그릭요거트)을 우선으로 잡자.")
+
+    # 룰 3) 지방/가공식품 경고
+    risky_keywords = ["튀김", "치킨", "피자", "햄버거", "라면", "떡볶이", "감자튀김", "소시지", "베이컨"]
+    if (fat_max is not None and fat_max >= fat_thr) or any(k in foods for k in risky_keywords):
+        flags.append("high_fat_or_processed")
+        notes.append(f"지방/가공식품 비중이 높을 수 있어. (지방 상단 경고선 {fat_thr}g) 물+채소(섬유질)로 보완하고, 다음 끼니는 기름 적은 조리(구이/찜)로 가자.")
+
+    # 룰 노트 합치기
+    if notes:
+        rule_note = " | ".join(notes)
+
+        # 기존 진단에 덧붙이되 너무 길어지지 않게
+        diagnosis = (result.get("diagnosis") or "").strip()
+        if diagnosis:
+            result["diagnosis"] = f"{diagnosis} (룰 보완: {rule_note})"
+        else:
+            result["diagnosis"] = f"(룰 보완: {rule_note})"
+
+        result["rule_note"] = rule_note
+    else:
+        result["rule_note"] = ""
+
+    result["rule_flags"] = flags
+    return result
+
+
 # -----------------------------
 # 4) 이미지 -> base64 data URL 변환
 # -----------------------------
@@ -117,7 +330,8 @@ def to_data_url(file_bytes: bytes, mime: str) -> str:
 # 5) AI 분석 함수 (사진 + 프로필 + 이전요약)
 # -----------------------------
 
-def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str | None) -> dict:
+def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str | None, meal_type: str, today_context: str | None) -> dict:
+
     """
     반환 dict:
     {
@@ -144,12 +358,15 @@ def analyze_meal(image_bytes: bytes, mime: str, profile: dict, prev_summary: str
 - 몸무게(kg): {profile.get("weight")}
 - 성별: {profile.get("gender")}
 - 목표: {profile.get("goal")}  (maintain=유지, cut=감량, bulk=증량)
-
+- 현재 끼니 타입: {meal_type}
 이전 식사 요약(있으면 참고):
 {prev_summary or "없음"}
+오늘 맥락(있으면 참고):
+{today_context or "없음"}
+
 
 요청:
-아래 스키마를 정확히 따르는 JSON만 출력하라.
+아래 스키마를 정확히 따르는 JSON만 출력하라. 그리고 오늘 누적 상황을 고려해서 다음 팁을 제시하라
 {{
   "foods": ["string"],
   "macros": {{
@@ -239,15 +456,29 @@ if submitted:
     st.success("저장 완료! user_profile.json에 기록했어.")
     profile = new_profile
 
-#st.caption("현재 저장된 프로필")
-#st.json(profile if profile else {"info": "아직 저장된 프로필이 없어."})
-#st.divider()
+
+st.caption("현재 저장된 프로필")
+with st.expander("룰 기준(프로필 기반)"):
+    st.json(get_rule_thresholds(profile))
+st.json(profile if profile else {"info": "아직 저장된 프로필이 없어."})
+st.divider()
+
+
 
 # -----------------------------
 # 8) 사진 업로드 + AI 분석
 # -----------------------------
 st.header("2) 식사 사진 업로드 & 분석")
 
+render_today_dashboard(profile) 
+
+meal_options = ["아침", "점심", "저녁", "간식"]
+default_meal = get_default_meal_type()
+meal_type = st.selectbox(
+    "끼니 타입",
+    meal_options,
+    index=meal_options.index(default_meal)
+)
 uploaded = st.file_uploader("식사 사진을 올려줘 (jpg/png)", type=["jpg", "jpeg", "png"])
 
 if uploaded is None:
@@ -269,20 +500,42 @@ else:
         else:
             try:
                 with st.spinner("분석 중..."):
+
+                    today = datetime.now().date().isoformat()
+                    tot = daily_totals(today)
+                    targets = get_daily_targets(profile)
+                    today_context = f"""
+                    오늘 누적(추정):
+                    - 끼니 수: {tot["count"]}
+                    - 누적 탄수화물: {tot["total_macros"]["carbs_g"]} g
+                    - 누적 단백질: {tot["total_macros"]["protein_g"]} g (목표 {targets["protein_g"]} g)
+                    - 누적 지방: {tot["total_macros"]["fat_g"]} g
+                    - 누적 칼로리: {tot["total_macros"]["calories_kcal"]} kcal (목표 {targets["calories_kcal"]} kcal)
+                    """
                     prev_summary = make_prev_summary_from_log(n=3)
                     result = analyze_meal(
                         image_bytes=img_bytes,
                         mime=mime,
                         profile=profile,
-                        prev_summary= prev_summary
+                        prev_summary= prev_summary,
+                        meal_type=meal_type,
+                        today_context=today_context
                     )
+                    result = apply_rules(result, profile)
+                    result["meal_type"] = meal_type
+
                 entry = {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
                     "foods": result.get("foods", []),
                     "macros": result.get("macros", {}),
                     "diagnosis": result.get("diagnosis", ""),
                     "next_meal_tip": result.get("next_meal_tip", ""),
+                    "rule_flags": result.get("rule_flags", []),
+                    "rule_note": result.get("rule_note", ""),
+                    "date": datetime.now().date().isoformat(),
+                    "meal_type": meal_type,
                     "note": "auto_log_no_image"
+
                 }
                 append_log(entry)
 
@@ -301,17 +554,27 @@ else:
                     👉 **진단:** {result.get("diagnosis", "")}  
                     👉 **다음 끼니 팁:** {result.get("next_meal_tip", "")}
                     """)
+                    
+                """st.header("📊 오늘 누적(추정)")
+                today = datetime.now().date().isoformat()
+                tot = daily_totals(today)
+                targets = get_daily_targets(profile) if profile else {}"""
 
+                tm = tot["total_macros"]
+                st.markdown(f"""
+                - 오늘 기록된 끼니 수: **{tot["count"]}**
+                - 누적 탄수화물: **{tm["carbs_g"]} g**
+                - 누적 단백질: **{tm["protein_g"]} g** / 목표(대략): **{targets.get("protein_g","-")} g**
+                - 누적 지방: **{tm["fat_g"]} g**
+                - 누적 칼로리: **{tm["calories_kcal"]} kcal** / 목표(대략): **{targets.get("calories_kcal","-")} kcal**
+                """)
+      
+                    
+                # 다음 분석에 쓸 “이전 요약 1줄”
+                #foods = ", ".join(result.get("foods", [])[:3])
+                #st.session_state.prev_summary = make_prev_summary_from_log(n=3)
+                #st.caption(f"다음 분석에 참고할 최근 3끼 요약:\n{st.session_state.prev_summary or '없음'}")
 
-                # 다음 분석에 쓸 “이전 요약 1줄” 만들기
-                # (AI 에이전트 느낌 최소 장치)
-                foods = ", ".join(result.get("foods", [])[:3])
-                st.session_state.prev_summary = make_prev_summary_from_log(n=3)
-                st.caption(f"다음 분석에 참고할 최근 3끼 요약:\n{st.session_state.prev_summary or '없음'}")
-
-
-            except json.JSONDecodeError:
-                st.error("모델 출력이 JSON 형식이 아니었어. 다시 눌러봐(가끔 발생).")
             except Exception as e:
                 st.error(f"분석 실패: {e}")
 
